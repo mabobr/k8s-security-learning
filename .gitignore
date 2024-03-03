@@ -1,0 +1,4 @@
+.vagrant*
+k8s.key*
+README.mb
+Vagrantfile.src
