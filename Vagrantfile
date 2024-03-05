@@ -7,13 +7,37 @@ rm /etc/localtime
 ln -s /usr/share/zoneinfo/Europe/Bratislava /etc/localtime
 
 dnf -y install firewalld net-tools nc tmux emacs-nox
-systemctl enable --now firewalld
+
+# we will use nftables only
+#systemctl disable firewalld >/dev/null 2>/dev/null
+#systemctl mask --now firewalld
+#systemctl enable --now nftables
+systemctl enable --now firewalld || exit 1
+
+# setup NFT filters
+# nft add table inet filter || exit 1
+# nft add chain inet filter input { type filter hook input priority filter \\; } || exit 1
+# nft add chain inet filter forward { type filter hook forward priority filter \\; } || exit 1
+# nft add chain inet filter output { type filter hook output priority filter \\; } || exit 1
+# grep -q '22 accept' /etc/sysconfig/nftables.conf
+# if [ $? != "0" ] ; then
+#     nft add rule inet filter input tcp dport 22 accept || exit 1
+# fi
+
+# nft add chain inet filter input '{ policy drop; }'
+# echo "flush ruleset" > /etc/sysconfig/nftables.conf
+# nft list ruleset >> /etc/sysconfig/nftables.conf
+
 dnf -y update
 SCRIPT
 
 ############################################################################
 # will setup k8s cluster to up&running state and create proxy 
 app_setup_sh = <<-SCRIPT
+
+#env | sort
+echo USING POD_NETWORK_CIDR=${POD_NETWORK_CIDR}
+
 
 HOSTNAME=$(hostname -s)
 # this script is not for proxy, the proxy VM has own setup code
@@ -24,7 +48,7 @@ grep -q "^k8s:" /etc/passwd
 if [[ $? != "0" ]] ; then
     useradd -c "apl. k8s user" k8s || exit 1
 fi
-K8S_HOME=$( getent passwd "$USER" | cut -d: -f6 )
+K8S_HOME=$( getent passwd k8s | cut -d: -f6 )
 
 if [[ ! -d ${K8S_HOME}/.ssh ]] ; then
     mkdir -p ${K8S_HOME}/.ssh || exit 1
@@ -83,7 +107,8 @@ sed -e '/swap/s/^/#/g' -i /etc/fstab || exit 1
 
 #####################################################
 # installing
-cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+if [ ! -f /etc/yum.repos.d/kubernetes.repo ] ; then
+    cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
 baseurl=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/
@@ -92,33 +117,57 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/v1.29/rpm/repodata/repomd.xml.key
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF
+fi
+
 dnf -y makecache || exit 1
 dnf -y install kubelet kubeadm kubectl --disableexcludes=kubernetes || exit 1
 systemctl enable --now kubelet || exit 1
 
 if [[ ${HOSTNAME} = "master" ]] ; then
-    firewall-cmd -q --permanent --add-port=6443/tcp
-    firewall-cmd -q --permanent --add-port=2379-2380/tcp
-    firewall-cmd -q --permanent --add-port=10250/tcp
-    firewall-cmd -q --permanent --add-port=10251/tcp
-    firewall-cmd -q --permanent --add-port=10259/tcp
-    firewall-cmd -q --permanent --add-port=10257/tcp
-    firewall-cmd -q --permanent --add-port=179/tcp
-    firewall-cmd -q --permanent --add-port=4789/udp
-    firewall-cmd --reload
+    for PORT in 6443 10250 10251 10259 10257 179
+    do  
+        firewall-cmd --permanent --add-port=${PORT}/tcp
+    done
+    firewall-cmd --permanent --add-port=5789/udp
+    firewall-cmd --permanent --add-port=2379-2380/udp
 
     if [[ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]] ; then
         kubeadm init --pod-network-cidr ${POD_NETWORK_CIDR} || exit 1  
+        mkdir -p $K8S_HOME/.kube || exit 1
+        cp -i /etc/kubernetes/admin.conf $K8S_HOME/.kube/config || exit 1
+        chown -R k8s:k8s $K8S_HOME/.kube || exit 1
     else
         echo k8s is already initialized, when re-initialization is needed, destroy VMs via vagrant
     fi
 else
-    firewall-cmd -q --permanent --add-port=179/tcp
-    firewall-cmd -q --permanent --add-port=10250/tcp
-    firewall-cmd -q --permanent --add-port=30000-32767/tcp
-    firewall-cmd -q --permanent --add-port=4789/udp
-    firewall-cmd -q --reload
+    firewall-cmd --permanent --add-port=30000-32767/tcp
+    firewall-cmd --permanent --add-port=4789/udp
 fi
+firewall-cmd --reload || exit 1
+SCRIPT
+
+net_setup_sh = <<-SCRIPT
+K8S_HOME=$( getent passwd k8s | cut -d: -f6 )
+
+if [[ ${HOSTNAME} = "master" ]] ; then
+    
+    rm -f /tmp/join2cluster
+    kubeadm token create --print-join-command >/tmp/join2cluster || exit 1
+    if [ -f /tmp/join2cluster ] ; then
+        echo Copying join command to workers /tmp/join2cluster
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${K8S_HOME}/.ssh/k8s.key /tmp/join2cluster k8s@node1:/tmp
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${K8S_HOME}/.ssh/k8s.key /tmp/join2cluster k8s@node0:/tmp
+    else
+        echo $0 error: File /tmp/join2cluster not created
+        exit 1
+    fi
+else
+    echo TBD waiting for join command
+fi
+
+#if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
+#    
+#fi
 SCRIPT
 
 Vagrant.configure("2") do |config|
@@ -144,14 +193,16 @@ Vagrant.configure("2") do |config|
         node1.vm.hostname    = "node1"
     end
 
-    config.vm.define "proxy" do |proxy|
-        proxy.vm.hostname    = "proxy"
-    end
+    # config.vm.define "proxy" do |proxy|
+    #     proxy.vm.hostname    = "proxy"
+    # end
 
     config.vm.provision "system-init", type: "shell", run: "once", :inline => rhel9_setup_sh
     config.vm.provision "reload-after-update", type: "reload",  run: "once"
     config.vm.provision "copy-k8s-priv-key", type: "file", source: "./k8s.key", destination: "/tmp/k8s.key", run: "once"
     config.vm.provision "copy-k8s-pub-key",  type: "file", source: "./k8s.key.pub", destination: "/tmp/k8s.key.pub", run: "once"
     config.vm.provision "app-init", type: "shell", run: "once", :inline => app_setup_sh, \
+        env: {"POD_NETWORK_CIDR" => ENV['POD_NETWORK_CIDR'],"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}
+    config.vm.provision "net-init", type: "shell", run: "once", :inline => net_setup_sh, \
         env: {"POD_NETWORK_CIDR" => ENV['POD_NETWORK_CIDR'],"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}
 end

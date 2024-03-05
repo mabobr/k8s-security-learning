@@ -11,11 +11,8 @@
 VERBOSE=${VERBOSE:-0}
 # disable/enable vagrant verbose
 VAGRANT_VERBOSE=${VAGRANT_VERBOSE:-0}
-# there will be created anothe VM hostname=proxy w/ nginx as forward proxy for internet access
-# this will make things litte harder ;)
-# if USE_HTTP_PROXY == 1 - all VM nodes will have port 80,443 disabled on local firewall,
-# these VM will have to go via proxy VM
-export USE_HTTP_PROXY=${USE_HTTP_PROXY:-1}
+# PROXY may be implemented later - when network is up
+export USE_HTTP_PROXY=${USE_HTTP_PROXY:-0}
 
 PRIVATE_KEYFILE=k8s.key
 
@@ -46,11 +43,11 @@ else
     VAGRANT_OPTIONS="--no-tty"
 fi
 
-vagrant status | grep -Fq -e shutoff -e "not created"
+# all machines should be in the same state - not checking
+vagrant status | grep -Fq "not created"
 if [[ $? = "0" ]] ; then
-    debug Machine not running, spinning up VMs wo/ provisioning
+    debug Machine not created, spinning up VMs wo/ provisioning    
     vagrant ${VAGRANT_OPTIONS} up --no-provision || exit 1
-
     debug Spinup provisioning
     vagrant ${VAGRANT_OPTIONS} provision --provision-with system-init,reload-after-update || exit 1
 
@@ -60,7 +57,20 @@ if [[ $? = "0" ]] ; then
         ssh-keygen -t ecdsa -f ${PRIVATE_KEYFILE} || exit 1
     fi
     vagrant ${VAGRANT_OPTIONS} provision --provision-with  copy-k8s-priv-key,copy-k8s-pub-key || exit 1
+
+    debug k8s, proxy initialization at VMs
+    echo Using POD_NETWORK_CIDR=${POD_NETWORK_CIDR}
+    POD_NETWORK_CIDR=${POD_NETWORK_CIDR} \
+    USE_HTTP_PROXY=${USE_HTTP_PROXY} \
+    vagrant ${VAGRANT_OPTIONS} provision --provision-with app-init || exit 1
+
+    vagrant ${VAGRANT_OPTIONS} provision --provision-with net-init || exit 1
 fi
 
-debug k8s, proxy initialization at VMs
-vagrant ${VAGRANT_OPTIONS} provision --provision-with app-init || exit 1
+vagrant status | grep -Fq "shutoff"
+if [[ $? = "0" ]] ; then
+    debug Machine not running, spinning up VMs wo/ provisioning    
+    vagrant ${VAGRANT_OPTIONS} up --no-provision || exit 1
+fi
+
+
