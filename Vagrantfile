@@ -33,11 +33,10 @@ SCRIPT
 
 ############################################################################
 # will setup k8s cluster to up&running state and create proxy 
-app_setup_sh = <<-SCRIPT
+app_init_sh = <<-SCRIPT
 
 #env | sort
 echo USING POD_NETWORK_CIDR=${POD_NETWORK_CIDR}
-
 
 HOSTNAME=$(hostname -s)
 # this script is not for proxy, the proxy VM has own setup code
@@ -85,17 +84,6 @@ net.bridge.bridge-nf-call-ip6tables = 1
 EOF
 sysctl -q --system
 
-# instralling container.io
-dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo || exit 1
-dnf -y makecache || exit 1
-dnf install -y containerd.io curl || exit 1
-# backup default config
-mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
-containerd config default > /etc/containerd/config.toml
-sed -ir 's/^(\s+SystemdCgroup = ).*/\1 true/' /etc/containerd/config.toml
-
-systemctl enable --now containerd.service || exit 1
-
 ####################################################
 # selinux disable
 setenforce 0
@@ -104,6 +92,19 @@ sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/sysconf
 # swap off
 swapoff -a || exit 1
 sed -e '/swap/s/^/#/g' -i /etc/fstab || exit 1
+
+
+# installing container.io
+dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo || exit 1
+dnf -y makecache || exit 1
+dnf install -y containerd.io curl || exit 1
+# backup default config
+mv /etc/containerd/config.toml /etc/containerd/config.toml.bak
+containerd config default > /etc/containerd/config.toml || exit 1
+sed -i 's/SystemdCgroup \= false/SystemdCgroup \= true/g' /etc/containerd/config.toml || exit 1
+
+systemctl enable --now containerd.service || exit 1
+systemctl status containerd.service
 
 #####################################################
 # installing
@@ -124,35 +125,35 @@ dnf -y install kubelet kubeadm kubectl --disableexcludes=kubernetes || exit 1
 systemctl enable --now kubelet || exit 1
 
 if [[ ${HOSTNAME} = "master" ]] ; then
-    for PORT in 6443 10250 10251 10259 10257 179
-    do  
-        firewall-cmd --permanent --add-port=${PORT}/tcp
-    done
-    firewall-cmd --permanent --add-port=5789/udp
-    firewall-cmd --permanent --add-port=2379-2380/udp
+    firewall-cmd --permanent --add-port={6443,2379,2380,10250,10251,10252,10257,10259,179}/tcp
+    firewall-cmd --permanent --add-port=4789/udp
 
     if [[ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]] ; then
-        kubeadm init --pod-network-cidr ${POD_NETWORK_CIDR} || exit 1  
+        DEFAULT_DEV=$(netstat -rn|grep "^0.0.0.0" |awk '{print $8}')
+        MY_IP=$(ifconfig ${DEFAULT_DEV} | grep "broadcast" | awk '{print $2}')
+
+        echo EXEC: kubeadm init --pod-network-cidr ${POD_NETWORK_CIDR}  --apiserver-advertise-address=${MY_IP}
+        kubeadm init --pod-network-cidr ${POD_NETWORK_CIDR}  --apiserver-advertise-address=${MY_IP} || exit 1  
         mkdir -p $K8S_HOME/.kube || exit 1
         cp -i /etc/kubernetes/admin.conf $K8S_HOME/.kube/config || exit 1
         chown -R k8s:k8s $K8S_HOME/.kube || exit 1
     else
         echo k8s is already initialized, when re-initialization is needed, destroy VMs via vagrant
     fi
+
+    rm -f /tmp/join2cluster
+    kubeadm token create --print-join-command >/tmp/join2cluster || exit 1    
 else
-    firewall-cmd --permanent --add-port=30000-32767/tcp
+    firewall-cmd --permanent --add-port={179,10250,30000-32767}/tcp
     firewall-cmd --permanent --add-port=4789/udp
+    
 fi
 firewall-cmd --reload || exit 1
 SCRIPT
 
-net_setup_sh = <<-SCRIPT
-K8S_HOME=$( getent passwd k8s | cut -d: -f6 )
-
+copy_join_command_sh = <<-SCRIPT
 if [[ ${HOSTNAME} = "master" ]] ; then
-    
-    rm -f /tmp/join2cluster
-    kubeadm token create --print-join-command >/tmp/join2cluster || exit 1
+    K8S_HOME=$( getent passwd k8s | cut -d: -f6 )
     if [ -f /tmp/join2cluster ] ; then
         echo Copying join command to workers /tmp/join2cluster
         scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ${K8S_HOME}/.ssh/k8s.key /tmp/join2cluster k8s@node1:/tmp
@@ -161,13 +162,80 @@ if [[ ${HOSTNAME} = "master" ]] ; then
         echo $0 error: File /tmp/join2cluster not created
         exit 1
     fi
-else
-    echo TBD waiting for join command
+fi
+SCRIPT
+
+joining_setup_sh = <<-SCRIPT
+K8S_HOME=$( getent passwd k8s | cut -d: -f6 )
+
+if [[ ${HOSTNAME} != "master" ]] ; then
+    let I=0
+    while :
+    do
+        if [ ! -f /tmp/join2cluster ] ; then
+            if [ $I -gt 24 ] ; then
+                echo $0 error: join command not delivered within 2 minutes >&2
+                exit 1
+            fi
+            echo Waiting for file /tmp/join2cluster 
+            sleep 5
+            let I+=1
+        else
+            break
+        fi
+    done
+    echo Joining cluster
+    bash /tmp/join2cluster || exit 1
+    rm -f /tmp/join2cluster 
+fi
+SCRIPT
+
+install_cni_sh = <<-SCRIPT
+if [[ $(hostname -s) == "master" ]] ; then
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+
+    kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml || exit 1        
+    echo Waiting for cluster to become ready, needing 3 ready nodes, max 5 min
+    let TTL=$(date +%s)+300
+    while :
+    do
+        CNT=$(kubectl get nodes | grep Ready | wc -l)
+        if [ $CNT -eq 3 ] ; then
+            break
+        fi
+        if [ $(date +%s) -gt ${TTL} ] ; then
+            echo $0 error: Cluster not ready in 5 minutes, check: kubectl get nodes
+            exit 1
+        fi
+        sleep 5
+    done
+fi
+exit 0
+SCRIPT
+
+running_check_sh = <<-SCRIPT
+RET=$(curl -s http://localhost:10248/healthz)
+if [[ ${RET} != "ok" ]] ; then
+    echo $0 error: problem on node $(hostname -s)
+    exit 1
 fi
 
-#if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
-#    
-#fi
+if [[ $(hostname -s) == "master" ]] ; then
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+    let TTL=$(date +%s)+300
+    while :
+    do
+        CNT=$(kubectl get nodes | grep Ready | wc -l)
+        if [ $CNT -eq 3 ] ; then
+            break
+        fi
+        if [ $(date +%s) -gt ${TTL} ] ; then
+            echo $0 error: Cluster not ready in 5 minutes, check: kubectl get nodes
+            exit 1
+        fi
+        sleep 5
+    done 
+fi      
 SCRIPT
 
 Vagrant.configure("2") do |config|
@@ -176,8 +244,8 @@ Vagrant.configure("2") do |config|
     config.vm.synced_folder ".", "/vagrant", disabled: true
   
     config.vm.provider "libvirt" do |v|
-        v.memory = 2048
-        v.cpus = 2
+        v.memory = 4096
+        v.cpus = 4
         v.graphics_type = 'none'
     end
   
@@ -201,8 +269,11 @@ Vagrant.configure("2") do |config|
     config.vm.provision "reload-after-update", type: "reload",  run: "once"
     config.vm.provision "copy-k8s-priv-key", type: "file", source: "./k8s.key", destination: "/tmp/k8s.key", run: "once"
     config.vm.provision "copy-k8s-pub-key",  type: "file", source: "./k8s.key.pub", destination: "/tmp/k8s.key.pub", run: "once"
-    config.vm.provision "app-init", type: "shell", run: "once", :inline => app_setup_sh, \
+    config.vm.provision "app-init", type: "shell", run: "once", :inline => app_init_sh, \
         env: {"POD_NETWORK_CIDR" => ENV['POD_NETWORK_CIDR'],"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}
-    config.vm.provision "net-init", type: "shell", run: "once", :inline => net_setup_sh, \
+    config.vm.provision "copy_join_command", type: "shell", run: "once", :inline => copy_join_command_sh
+    config.vm.provision "join-cluster", type: "shell", run: "once", :inline => joining_setup_sh, \
         env: {"POD_NETWORK_CIDR" => ENV['POD_NETWORK_CIDR'],"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}
+    config.vm.provision "install_cni", type: "shell", run: "once", :inline => install_cni_sh
+    config.vm.provision "running_check", type: "shell", run: "once", :inline => running_check_sh
 end
