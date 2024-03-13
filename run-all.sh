@@ -59,7 +59,7 @@ if [[ $? == "0" ]] ; then
     echo Using POD_NETWORK_CIDR=${POD_NETWORK_CIDR}
     POD_NETWORK_CIDR=${POD_NETWORK_CIDR} \
     USE_HTTP_PROXY=${USE_HTTP_PROXY} \
-    vagrant ${VAGRANT_OPTIONS} up --provision-with app-init || exit 1
+    vagrant ${VAGRANT_OPTIONS} up --provision-with app-init,proxy_setup || exit 1
     vagrant ${VAGRANT_OPTIONS} up --provision-with copy_join_command || exit 1
     vagrant ${VAGRANT_OPTIONS} up --provision-with join-cluster || exit 1
     vagrant ${VAGRANT_OPTIONS} up --provision-with install_cni || exit 1
@@ -71,8 +71,15 @@ if [[ $? = "0" ]] ; then
     vagrant ${VAGRANT_OPTIONS} up --no-provision || exit 1
 fi
 
+if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
+    USE_HTTP_PROXY=${USE_HTTP_PROXY} vagrant ${VAGRANT_OPTIONS} up --provision-with deny_tcp443 || exit 1
+fi
+
 echo "Cluster status check ..."
-vagrant ${VAGRANT_OPTIONS} provision --provision-with running_check || exit 1
+USE_HTTP_PROXY=${USE_HTTP_PROXY} vagrant ${VAGRANT_OPTIONS} provision --provision-with running_check || exit 1
 echo "Cluster ready"
 
+echo "Copy trainig files and exec training on master only"
+USE_HTTP_PROXY=${USE_HTTP_PROXY} vagrant ${VAGRANT_OPTIONS} provision master --provision-with copy-k8s-files,exec_training_batch || exit 1
 
+exit 0

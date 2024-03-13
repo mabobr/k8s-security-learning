@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: np-client-pod
+  namespace: networkpolicy-ns
+  labels:
+    app: np-client
+spec:
+  containers:
+    - name: busybox
+      image: radial/busyboxplus:curl
+      command:
+        [
+          "sh",
+          "-c",
+          "while true; do curl -m 3 IP_GOES_HERE; sleep 5; done",
+        ]
