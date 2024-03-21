@@ -169,8 +169,7 @@ dnf -y install kubelet kubeadm kubectl --disableexcludes=kubernetes || exit 1
 systemctl enable --now kubelet || exit 1
 
 if [[ ${HOSTNAME} = "master" ]] ; then
-    firewall-cmd --permanent --add-port={6443,2379,2380,10250,10251,10252,10257,10259,179}/tcp
-    firewall-cmd --permanent --add-port=4789/udp
+    firewall-cmd --permanent --add-port={179,6443,2379,2380,10250,10259,10257}/tcp
 
     if [[ ! -f /etc/kubernetes/manifests/kube-apiserver.yaml ]] ; then
         DEFAULT_DEV=$(netstat -rn|grep "^0.0.0.0" |awk '{print $8}')
@@ -188,9 +187,7 @@ if [[ ${HOSTNAME} = "master" ]] ; then
     rm -f /tmp/join2cluster
     kubeadm token create --print-join-command >/tmp/join2cluster || exit 1    
 else
-    firewall-cmd --permanent --add-port={179,10250,30000-32767}/tcp
-    firewall-cmd --permanent --add-port=4789/udp
-    
+    firewall-cmd --permanent --add-port={179,10250,30000-32767}/tcp    
 fi
 firewall-cmd --reload || exit 1
 SCRIPT
@@ -272,6 +269,7 @@ SCRIPT
 #################################################################
 # final tests
 running_check_sh = <<-SCRIPT
+
 if [[ $(hostname -s) == "proxy" ]] ; then
     if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
         systemctl is-active squid.service
@@ -279,7 +277,18 @@ if [[ $(hostname -s) == "proxy" ]] ; then
     fi
     exit 0
 fi
-  
+
+echo Allowing calico network intercommunication, new zone, adding interfaces, firewall
+ZONE_NAME=k8s_calico
+firewall-cmd --get-zones | grep -q "${ZONE_NAME}"
+if [[ $? != "0" ]] ; then
+    firewall-cmd --permanent --new-zone=${ZONE_NAME} || exit 1
+    firewall-cmd --permanent --zone=${ZONE_NAME} --set-target=ACCEPT || exit 1
+    firewall-cmd --permanent --zone=${ZONE_NAME} --add-interface=cali+ || exit 1
+    firewall-cmd --permanent --zone=${ZONE_NAME} --add-interface=tunl+ || exit 1
+    firewall-cmd --reload || exit 1
+fi
+
 # creating folder for files
 rm -rf /tmp/k8s-files
 mkdir /tmp/k8s-files || exit 1

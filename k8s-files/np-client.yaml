@@ -13,5 +13,5 @@ spec:
         [
           "sh",
           "-c",
-          "while true; do curl -m 3 IP_GOES_HERE; sleep 5; done",
+          "while true; do curl -s -m 3 IP_GOES_HERE; sleep 5; done",
         ]

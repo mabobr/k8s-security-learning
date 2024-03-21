@@ -17,11 +17,20 @@ separ
 kubectl apply -f ./np-dedicated-namespace.yaml || exit 1
 kubectl get namespace
 
+# this is debut deployment
+#kubectl apply -f ./np-depl-2busyboxes.yaml || exit 1
+
 separ
 echo "Creating nginx POD"
 kubectl apply -f ./np-depl-nginx.yaml || exit 1
 echo Waiting for startup 60s ...
 A_POD=$(kubectl get pods -n networkpolicy-ns | grep nginx-depl|cut -f1 -d' ')
+if [[ -z ${A_POD} ]] ; then
+    echo $0 error: POD not found in namespace networkpolicy-ns: kubectl get pods -n networkpolicy-ns
+    kubectl get pods -n networkpolicy-ns
+    np_cleanup
+    exit 1
+fi
 kubectl wait --for=condition=Ready pod/${A_POD} -n networkpolicy-ns --timeout=60s
 if [[ $? != "0" ]] ; then
     echo $0 error: POD not started within 1minute, PROXY?
@@ -45,6 +54,7 @@ kubectl apply -f ./np-client-edited.yaml || exit 1
 echo Waiting to start POD client, then show logs of licnet POD
 kubectl wait --for=condition=Ready pod/np-client-pod -n networkpolicy-ns --timeout=60s || exit 1
 separ running pods
+
 kubectl get pods -n networkpolicy-ns -o wide
 kubectl logs -n networkpolicy-ns np-client-pod | tail -200
 

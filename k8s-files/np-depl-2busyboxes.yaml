@@ -1,0 +1,24 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: busyboxes2-depl
+  namespace: networkpolicy-ns
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: busybox-pod
+  template:
+    metadata:
+      labels:
+        app: busybox-pod
+    spec:
+      containers:
+        - name: busybox
+          image: radial/busyboxplus:curl
+          command:
+            [
+              "sh",
+              "-c",
+              "sleep 1000",
+            ]
