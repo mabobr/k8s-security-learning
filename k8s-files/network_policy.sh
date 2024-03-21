@@ -58,4 +58,6 @@ separ running pods
 kubectl get pods -n networkpolicy-ns -o wide
 kubectl logs -n networkpolicy-ns np-client-pod | tail -200
 
+separ Before network policy apply
+
 np_cleanup
