@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: np-client-pod
+  name: np-busybox-w-curl
   namespace: networkpolicy-ns
   labels:
-    app: np-client
+    app: np-busybox-w-curl
 spec:
   containers:
     - name: busybox
@@ -13,5 +13,5 @@ spec:
         [
           "sh",
           "-c",
-          "while true; do curl -s -m 3 IP_GOES_HERE; sleep 5; done",
+          "while true; do date; curl -m 3 IP_GOES_HERE; sleep 2; done",
         ]

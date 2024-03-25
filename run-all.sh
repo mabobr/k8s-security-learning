@@ -63,6 +63,7 @@ if [[ $? == "0" ]] ; then
     vagrant ${VAGRANT_OPTIONS} up --provision-with copy_join_command || exit 1
     vagrant ${VAGRANT_OPTIONS} up --provision-with join-cluster || exit 1
     vagrant ${VAGRANT_OPTIONS} up --provision-with install_cni || exit 1
+    vagrant ${VAGRANT_OPTIONS} up --provision-with open_firewall4cni || exit 1
 fi
 
 vagrant status | grep -Fq "shutoff"

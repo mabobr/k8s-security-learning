@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ng-client-2-nginx
+  namespace: networkpolicy-ns
+spec:
+  podSelector:
+    matchLabels:
+      app: np-busybox-w-curl
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              project: mb-test
+          podSelector:
+            matchLabels:
+              app: nginx-pod
+      ports:
+        - protocol: TCP
+          port: 80

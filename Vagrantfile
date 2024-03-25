@@ -36,7 +36,6 @@ SCRIPT
 proxy_setup_sh = <<-SCRIPT
 test $(hostname -s) != "proxy" && exit 0
 
-
 if [[ ${USE_HTTP_PROXY} == "0" ]] ; then
     # proxy is not used - VM will just running
     exit 0
@@ -46,6 +45,8 @@ fi
 # to make live for proxy easier - only here SElinux will be disabled
 #setenforce 0
 #sed -i --follow-symlinks 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/sysconfig/selinux
+
+dnf -y install squid || exit 1
 
 grep -q 'log common' /etc/squid/squid.conf
 if [[ $? != "0" ]] ; then
@@ -57,7 +58,6 @@ systemctl is-active squid.service  && systemctl stop squid.service
 firewall-cmd --permanent --add-port=3128/tcp || exit 1
 firewall-cmd --reload || exit 1
 
-dnf -y install squid || exit 1
 systemctl enable --now squid.service || exit 1
 echo http proxy enabled at: proxy:3128 firewall is open
 SCRIPT
@@ -142,7 +142,7 @@ if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
 [Service]
 Environment="HTTP_PROXY=http://proxy:3128"
 Environment="HTTPS_PROXY=http://proxy:3128"
-Environment="NO_PROXY=localhost"
+Environment="NO_PROXY=localhost,10.0.0.0/8,192.168.0.0/16,127.0.0.0/8"
 EOF
     systemctl daemon-reload
 fi
@@ -266,17 +266,10 @@ fi
 exit 0
 SCRIPT
 
-#################################################################
-# final tests
-running_check_sh = <<-SCRIPT
-
-if [[ $(hostname -s) == "proxy" ]] ; then
-    if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
-        systemctl is-active squid.service
-        exit $?
-    fi
-    exit 0
-fi
+######################################################################
+# installing CNI (calico) on master node
+open_firewall4cni_sh = <<-SCRIPT
+test $(hostname -s) == "proxy" && exit 0
 
 echo Allowing calico network intercommunication, new zone, adding interfaces, firewall
 ZONE_NAME=k8s_calico
@@ -287,6 +280,18 @@ if [[ $? != "0" ]] ; then
     firewall-cmd --permanent --zone=${ZONE_NAME} --add-interface=cali+ || exit 1
     firewall-cmd --permanent --zone=${ZONE_NAME} --add-interface=tunl+ || exit 1
     firewall-cmd --reload || exit 1
+fi
+SCRIPT
+#################################################################
+# final tests
+running_check_sh = <<-SCRIPT
+
+if [[ $(hostname -s) == "proxy" ]] ; then
+    if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
+        systemctl is-active squid.service
+        exit $?
+    fi
+    exit 0
 fi
 
 # creating folder for files
@@ -331,6 +336,15 @@ if [[ ${RV} != "200" ]] ; then
     exit 1
 fi
 echo Internet accessible 
+if [[ ${USE_HTTP_PROXY} != "0" ]] ; then
+    nc -z www.sme.sk 443
+    if [[ $? == "0" ]] ; then
+        echo $0 error: direct access to internet is still allowed, but it should not be 
+        exit 1
+    fi
+    echo Using PROXY - diurect internetr access is not allowed
+fi
+
 exit 0
 SCRIPT
 
@@ -354,7 +368,7 @@ if [[ -z ${HANDLE} ]] ; then
     exit 1
 fi   
 
-nft insert rule inet firewalld filter_OUTPUT position ${HANDLE} tcp dport 443 log prefix \"OUTGOING_443: \" reject || exit 1
+nft insert rule inet firewalld filter_OUTPUT position ${HANDLE} tcp dport 443 log prefix \\"OUTGOING_443: \\" reject || exit 1
 echo OUTPUT access ti 443/tcp REJECTED, logged via syslog
 SCRIPT
 
@@ -435,6 +449,7 @@ Vagrant.configure("2") do |config|
     config.vm.provision "join-cluster", type: "shell", run: "once", :inline => joining_setup_sh, \
         env: {"POD_NETWORK_CIDR" => ENV['POD_NETWORK_CIDR'],"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}
     config.vm.provision "install_cni", type: "shell", run: "once", :inline => install_cni_sh
+    config.vm.provision "open_firewall4cni", type: "shell", run: "once", :inline => open_firewall4cni_sh
     config.vm.provision "running_check", type: "shell", run: "once", :inline => running_check_sh, env: {"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}
     config.vm.provision "deny_tcp443", type: "shell", run: "once", :inline => deny_outgoing_443_sh, env: {"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}
     config.vm.provision "proxy_setup", type: "shell", run: "once", :inline => proxy_setup_sh, env: {"USE_HTTP_PROXY" => ENV['USE_HTTP_PROXY']}

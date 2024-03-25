@@ -6,11 +6,11 @@
 function separ()
 {
     TXT="$*"
-    echo -n ----------------------------------------
+    echo -n $(date "+%Y-%m-%d %T") -------------
     if [[ -n ${TXT} ]] ; then
-        echo -n ${TXT}
+        echo -n " ${TXT} "
     fi
-    echo
+    echo -------------
 }
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
@@ -24,6 +24,6 @@ fi
 echo   WHAT_TO_RUN=${WHAT_TO_RUN}   
 
 echo ${WHAT_TO_RUN} | grep -q -e "\ball\b" -e "\b\npb"
-test $? = "0" && . ${SCRIPT_DIR}/network_policy.sh
+test $? = "0" && . ${SCRIPT_DIR}/np-network_policy.sh
 
 exit 0
